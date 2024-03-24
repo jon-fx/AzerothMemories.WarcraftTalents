@@ -1,0 +1,342 @@
+﻿@page "/talents"
+@page "/talents/{talentString}"
+@using WarcraftTalents.Talents
+@using System.Diagnostics.CodeAnalysis
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+
+<PageTitle>Talents</PageTitle>
+
+<h1>Talents</h1>
+
+@if (string.IsNullOrEmpty(TalentString))
+{
+    <p>Talent String is NULL!</p>
+}
+else if (_talentsBySpec == null)
+{
+}
+else
+{
+    <p>Talent String is @TalentString!</p>
+
+    if (_userTalentTests == null)
+    {
+
+    }
+    else
+    {
+        var specsByClass = _talentsBySpec.Values.GroupBy(x => x.ClassId).ToDictionary(g => g.Key, g => g.ToList());
+
+        <div>
+            @foreach (var characterClass in specsByClass.OrderBy(x => x.Key))
+            {
+                var first = characterClass.Value.OrderBy(x => x.SpecId).First();
+
+                <button class="btn btn-primary m-1" @onclick="@(args => SetClassId(args, first))" disabled="@(characterClass.Key == _classId)">@first.ClassName</button>
+            }
+        </div>
+        <div>
+            @if (specsByClass.TryGetValue(_classId, out var specsByClass2))
+            {
+                foreach (var characterSpec in specsByClass2.OrderBy(x => x.SpecId))
+                {
+                    <button class="btn btn-primary m-1" @onclick="@(args => SetSpecId(args, characterSpec))" disabled="@(characterSpec.SpecId == _talentSpecId)">@characterSpec.SpecName</button>
+                }
+            }
+        </div>
+
+        <div style="display: grid; column-gap: 5px; row-gap: 5px;">
+
+            @foreach (var userTalent in _userTalentTests)
+            {
+                if (userTalent.IsNull)
+                {
+
+                }
+                else
+                {
+                    var iconColor = "red";
+                    var textColor = "black";
+                    if (userTalent.SelectedRank > 0)
+                    {
+                        iconColor = "green";
+                        textColor = "yellow";
+                    }
+
+                    if (userTalent.SelectedRank == userTalent.MaxRanks)
+                    {
+                        textColor = "green";
+                    }
+
+                    <div style="grid-column-start: @userTalent.X; grid-row-start: @userTalent.Y; width:50px; height: 50px; background-color:@iconColor; user-select: none;" @onclick="@(args => ToggleTalent(args, userTalent))">
+                        <p style="text-align: center; width:75%; margin: auto; font-weight: bold; -webkit-text-fill-color: @textColor; -webkit-text-stroke: 1px black;">@userTalent.SelectedRank / @userTalent.MaxRanks</p>
+                    </div>
+
+                }
+            }
+
+        </div>
+    }
+
+    <button class="btn btn-primary m-1" @onclick="TryReset">Rest</button>
+    <button class="btn btn-primary m-1" @onclick="TryNavigateToNewLink">Nav</button>
+    <button class="btn btn-primary m-1" @onclick="TryFill">Fill</button>
+}
+
+@code
+{
+    private Dictionary<int, JsonData.Root>? _talentsBySpec;
+    private UserTalentTests[]? _userTalentTests;
+
+    private int _classId;
+    private int _talentVersion;
+    private int _talentSpecId;
+
+    [Parameter] public string? TalentString { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var talentData = await Http.GetFromJsonAsync<JsonData.Root[]>("sample-data/talents.json");
+        if (talentData != null)
+        {
+            _talentsBySpec = talentData.ToDictionary(x => x.SpecId, x => x);
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
+
+        if (TalentString == null)
+        {
+            TalentString = "BwbBAAAAAAAAAAAAAAAAAAAAAAAAAAAIJplWOASkEpgkWkQAAQSkIIikAJBAAAIJJkIJSSCAE";
+            //TalentString = "BYEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        }
+
+        if (TalentString == null)
+        {
+        }
+        else if (_talentsBySpec == null)
+        {
+        }
+        else
+        {
+            var bitStreamReader = new BitStreamReader(TalentString);
+
+            bitStreamReader.TryExtractValue(8, out _talentVersion);
+            bitStreamReader.TryExtractValue(16, out _talentSpecId);
+
+            for (var i = 0; i < 16; i++)
+            {
+                bitStreamReader.TryExtractValue(8, out _);
+            }
+
+            if (UpdateUserSpecData() && _userTalentTests != null)
+            {
+                foreach (var userTalent in _userTalentTests)
+                {
+                    var selectedRank = 0;
+                    var isSelected = bitStreamReader.TryExtractBool();
+
+                    if (userTalent.IsNull)
+                    {
+                        continue;
+                    }
+
+                    if (isSelected)
+                    {
+                        var isPartiallyRanked = bitStreamReader.TryExtractBool();
+                        if (isPartiallyRanked)
+                        {
+                            for (var i = 0; i < 6; i++)
+                            {
+                                var temp = bitStreamReader.TryExtractBool();
+                                if (temp && selectedRank < userTalent.MaxRanks)
+                                {
+                                    selectedRank++;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            selectedRank = userTalent.MaxRanks;
+                        }
+
+                        var isChoiceNode = bitStreamReader.TryExtractBool();
+                        if (isChoiceNode)
+                        {
+                            if (bitStreamReader.TryExtractValue(2, out var choiceIndex))
+                            {
+                                // // var choiceIndex = bitStream.ExtractValue(2);
+                                // var choiceNode = nodeInfo.Entries[choiceIndex];
+                                // selectedName += $" [{choiceNode.Name}]";
+                            }
+                        }
+                    }
+
+                    userTalent.SelectedRank = selectedRank;
+                }
+            }
+        }
+    }
+
+    private bool UpdateUserSpecData()
+    {
+        if (_talentsBySpec == null)
+        {
+            return false;
+        }
+
+        if (_talentsBySpec.TryGetValue(_talentSpecId, out var specData))
+        {
+            var classNodes = specData.ClassNodes.Select(x => new KeyValuePair<int, JsonData.Node>(x.Id, x)).ToList();
+            var specNodes = specData.SpecNodes.Select(x => new KeyValuePair<int, JsonData.Node>(x.Id, x)).ToList();
+            var allNodes = classNodes.Concat(specNodes).ToDictionary(x => x.Key, x => x.Value);
+            var allNodesWithInfo = specData.FullNodeOrder.Select(x =>
+            {
+                allNodes.TryGetValue(x, out var node);
+                return (x, node);
+            }).ToList();
+
+            _classId = specData.ClassId;
+            _userTalentTests = allNodesWithInfo.Select(x => new UserTalentTests(x.x, x.node)).ToArray();
+        }
+        else
+        {
+            _userTalentTests = null;
+        }
+
+        return _userTalentTests != null;
+    }
+
+    protected Task ToggleTalent(MouseEventArgs mouseEventArgs, UserTalentTests userTalentTests)
+    {
+        if (mouseEventArgs.CtrlKey)
+        {
+            userTalentTests.SelectedRank--;
+        }
+        else
+        {
+            userTalentTests.SelectedRank++;
+        }
+
+        return TryNavigateToNewLink();
+    }
+
+    private bool TryBuildNewLink([NotNullWhen(true)] out string? newTalentString)
+    {
+        newTalentString = string.Empty;
+
+        if (TalentString == null)
+        {
+            return false;
+        }
+        if (_talentsBySpec == null)
+        {
+            return false;
+        }
+        if (_userTalentTests == null)
+        {
+            return false;
+        }
+
+        var bitStreamWriter = new BitStreamWriter();
+
+        bitStreamWriter.TryWriteValue(8, _talentVersion);
+        bitStreamWriter.TryWriteValue(16, _talentSpecId);
+
+        for (var i = 0; i < 16; i++)
+        {
+            bitStreamWriter.TryWriteValue(8, 0);
+        }
+
+        foreach (var userTalent in _userTalentTests)
+        {
+            if (userTalent.IsNull)
+            {
+                bitStreamWriter.TryWriteValue(false);
+            }
+            else
+            {
+
+                bitStreamWriter.TryWriteValue(userTalent.IsSelected);
+
+                if (userTalent.IsSelected)
+                {
+                    bitStreamWriter.TryWriteValue(userTalent.IsPartiallyRanked);
+
+                    if (userTalent.IsPartiallyRanked)
+                    {
+                        for (var i = 0; i < 6; i++)
+                        {
+                            bitStreamWriter.TryWriteValue(userTalent.SelectedRank > i);
+                        }
+                    }
+
+                    bitStreamWriter.TryWriteValue(userTalent.IsChoiceNode);
+
+                    if (userTalent.IsChoiceNode)
+                    {
+                        bitStreamWriter.TryWriteValue(2, 0);
+                    }
+                }
+            }
+        }
+
+        newTalentString = bitStreamWriter.GetTalentString();
+
+        return true;
+    }
+
+    private Task TryReset()
+    {
+        if (_userTalentTests != null)
+        {
+            foreach (var userTalent in _userTalentTests)
+            {
+                userTalent.SelectedRank = 0;
+            }
+        }
+
+        return TryNavigateToNewLink();
+    }
+
+    private Task TryNavigateToNewLink()
+    {
+        if (TryBuildNewLink(out var newTalentString))
+        {
+            NavigationManager.NavigateTo($"/talents/{newTalentString}");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task TryFill()
+    {
+        if (_userTalentTests != null)
+        {
+            foreach (var userTalent in _userTalentTests)
+            {
+                userTalent.SelectedRank = userTalent.MaxRanks;
+            }
+        }
+
+        return TryNavigateToNewLink();
+    }
+
+    private Task SetClassId(MouseEventArgs args, JsonData.Root characterSpec)
+    {
+        return SetSpecId(args, characterSpec);
+    }
+
+    private Task SetSpecId(MouseEventArgs args, JsonData.Root characterSpec)
+    {
+        _classId = characterSpec.ClassId;
+        _talentSpecId = characterSpec.SpecId;
+
+        UpdateUserSpecData();
+
+        return TryNavigateToNewLink();
+    }
+}
